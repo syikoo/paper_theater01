@@ -1,16 +1,20 @@
 """
 Conversational avatar application with pluggable display renderers.
 Main application orchestrating LLM, scenario management, and UI.
+Supports both text and voice chat modes.
 """
 
 import gradio as gr
-import json
 import os
 import logging
 from pathlib import Path
 from typing import Optional
 from openai import OpenAI
 from dotenv import load_dotenv
+from fastrtc import Stream, ReplyOnPause
+
+# Import core handlers
+from core import TextChatHandler, VoiceChatHandler, ConversationManager
 from scenario_manager import ScenarioManager
 from renderers import PaperTheaterRenderer, DEFAULT_PAPER_THEATER_MOODS
 
@@ -27,7 +31,6 @@ logging.basicConfig(
     datefmt='%H:%M:%S'
 )
 logger = logging.getLogger(__name__)
-# Ensure module logger follows configured level
 logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
 # Set static paths for Gradio to serve images
@@ -41,10 +44,6 @@ gr.set_static_paths(paths=[
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # === PROGRAMMATIC RENDERER SELECTION ===
-# Developer chooses renderer implementation here
-# To switch display methods, instantiate a different renderer class:
-# - renderer = PaperTheaterRenderer(DEFAULT_PAPER_THEATER_MOODS)  # HTML/CSS-based with background support
-# - renderer = Avatar3DRenderer(mood_config)                      # Future: 3D avatars
 scenario_manager = ScenarioManager('prompts/scenario.yaml')
 mood_config = scenario_manager.get_mood_config() or DEFAULT_PAPER_THEATER_MOODS
 renderer = PaperTheaterRenderer(mood_config)
@@ -57,7 +56,6 @@ def load_prompt_file(filepath: str) -> str:
 
 # Load and prepare system prompt
 base_system_prompt = load_prompt_file('prompts/system_prompt.txt')
-# Append base prompt from YAML if provided
 if scenario_manager.base_prompt:
     base_system_prompt = f"{base_system_prompt}\n\n{scenario_manager.base_prompt}"
 
@@ -67,11 +65,9 @@ base_system_prompt = base_system_prompt.replace(
     renderer.get_mood_description_prompt()
 )
 
-# Conversation state
-conversation_history = []
-scenario_started = False
-page_just_changed = False
-previous_page_location = None
+# Initialize handlers
+text_handler = TextChatHandler(client, scenario_manager, base_system_prompt)
+voice_handler = VoiceChatHandler(client)
 
 
 def resolve_image_path(path: str) -> str:
@@ -87,12 +83,24 @@ def resolve_image_path(path: str) -> str:
     if not path:
         return None
 
-    # If path starts with "images/", prepend "prompts/"
     if path.startswith("images/"):
         return f"prompts/{path}"
 
-    # Otherwise return as-is (already has full path like "prompts/images/...")
     return path
+
+
+# Initialize conversation manager
+conversation_manager = ConversationManager(
+    client=client,
+    text_handler=text_handler,
+    voice_handler=voice_handler,
+    scenario_manager=scenario_manager,
+    renderer=renderer,
+    resolve_image_path_func=resolve_image_path
+)
+
+# Scenario state
+scenario_started = False
 
 
 def resolve_move_target(target: str) -> Optional[str]:
@@ -130,226 +138,27 @@ def resolve_move_target(target: str) -> Optional[str]:
     return None
 
 
-def format_transitions(transitions: list) -> str:
-    """
-    Format transitions for system prompt.
-
-    Args:
-        transitions: List of transition dicts with 'id', 'description'
-
-    Returns:
-        Formatted transition text for prompt
-    """
-    if not transitions:
-        return "遷移なし（このページに留まります）"
-
-    lines = ["以下の条件に該当する場合、対応する遷移先IDを\"transition\"フィールドに指定してください:\n"]
-    for i, trans in enumerate(transitions, 1):
-        # Use 'id' as the transition target (simplified format)
-        target_id = trans.get('id', trans.get('transition_id', 'unknown'))
-        condition = trans.get('description', trans.get('condition', ''))
-
-        lines.append(f"{i}. \"{target_id}\"")
-        if condition:
-            lines.append(f"   {condition}\n")
-
-    lines.append("上記に該当しない場合は \"transition\": null を使用してください。")
-    return "\n".join(lines)
-
-
-def build_system_prompt(page_data: dict, base_prompt: str) -> str:
-    """
-    Combine page data with base system prompt.
-
-    Args:
-        page_data: Current page data
-        base_prompt: Base system prompt
-
-    Returns:
-        Combined system prompt
-    """
-    # Mood constraints (support both new 'allowed_moods' and legacy 'allowed_images')
-    allowed_moods = page_data.get('allowed_moods') or page_data.get('allowed_images')
-    if allowed_moods:
-        mood_constraint = f"このページでは以下のムードのみ使用可能: {', '.join(allowed_moods)}"
-    else:
-        mood_constraint = "すべてのムードを使用可能"
-
-    # Format transitions
-    transitions_text = format_transitions(page_data.get('transitions', []))
-
-    # Get prompts (support both new and legacy field names)
-    scene_prompt = page_data.get('scene_prompt', '')
-    page_prompt = page_data.get('page_prompt', page_data.get('additional_prompt', ''))
-    current_mood = page_data.get('mood', page_data.get('image', '基本スタイル'))
-    background = page_data.get('background_image', 'なし')
-
-    # Combine with page-specific instructions
-    combined_prompt = f"""{base_prompt}
-
----
-## 現在のシーン/ページ情報
-シーン: {page_data['scene']}
-ページ: {page_data['page']}
-現在のムード: {current_mood}
-背景: {background}
-
-## シーンプロンプト
-{scene_prompt}
-
-## ページプロンプト
-{page_prompt}
-
-## ムード使用制約
-{mood_constraint}
-
-## 利用可能な遷移
-{transitions_text}
-
-注意: 上記の追加指示は基本ルールに追加されるものです。基本的な応答形式（JSON形式、ムードの使い分けなど）は引き続き守ってください。
-"""
-    logger.debug("=== System Prompt ===\n%s", combined_prompt)
-    return combined_prompt
-
-
-def get_opening_message(page_data: dict) -> dict:
-    """
-    Generate opening message for page transitions.
-
-    Args:
-        page_data: Current page data
-
-    Returns:
-        dict: Contains text and mood name
-    """
-    return {
-        "text": page_data.get('opening_message', page_data.get('opening_speech', '')),
-        "mood": page_data.get('mood', page_data.get('image', '基本スタイル'))
-    }
-
-
-def parse_llm_response(response_text: str) -> tuple:
-    """
-    Extract JSON from LLM response and parse it.
-
-    Returns:
-        tuple: (text, mood_name, transition)
-    """
-    try:
-        data = json.loads(response_text)
-        return (
-            data.get("text", response_text),
-            data.get("mood", data.get("image", "基本スタイル")),  # Support both 'mood' and legacy 'image'
-            data.get("transition", None)
-        )
-    except json.JSONDecodeError:
-        # Not JSON format, treat as plain text
-        return response_text, "基本スタイル", None
-
-
 def chat(message: str, history: list):
     """
-    Main chat processing function (scenario-based with LLM transition detection).
+    Main text chat processing function.
     Returns: (text_response, html_output)
     """
-    global conversation_history, scenario_started, scenario_manager, page_just_changed
+    return conversation_manager.process_text_message(message)
 
-    # Get current page data
-    page_data = scenario_manager.get_current_page_data()
 
-    # If page just changed, return opening message
-    if page_just_changed:
-        opening = get_opening_message(page_data)
-        page_just_changed = False
-
-        conversation_history.append({"role": "assistant", "content": opening['text']})
-
-        # Render display using HTML/CSS renderer
-        # Resolve background image path (images/ -> prompts/images/)
-        background_path = resolve_image_path(page_data.get('background_image'))
-        logger.info("PAGE CHANGED: %s/%s - mood=%s", page_data['scene'], page_data['page'], opening['mood'])
-        logger.debug("  Background (YAML): %s", page_data.get('background_image'))
-        logger.debug("  Background (resolved): %s", background_path)
-        html_output = renderer.render(
-            opening['mood'],
-            background_path=background_path
-        )
-
-        return opening['text'], html_output
-
-    # Normal conversation flow
-    conversation_history.append({"role": "user", "content": message})
-
-    # Build system prompt
-    system_prompt = build_system_prompt(page_data, base_system_prompt)
-
-    # Call OpenAI API
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt}
-            ] + conversation_history,
-            temperature=0.7,
-            max_tokens=500
-        )
-
-        assistant_message = response.choices[0].message.content
-
-        # Parse response (includes transition field)
-        text_response, mood_name, transition = parse_llm_response(assistant_message)
-        logger.debug("RESPONSE: mood=%s, transition=%s: %s", mood_name, transition, text_response[:50])
-
-        conversation_history.append({"role": "assistant", "content": assistant_message})
-
-        # Handle page transition if LLM indicated
-        if transition:
-            try:
-                # Remember current location for possible undo
-                global previous_page_location
-                previous_page_location = (page_data['scene'], page_data['page'])
-
-                next_page_data = scenario_manager._transition_to(transition)
-                page_just_changed = True
-                logger.info("TRANSITION: %s -> %s/%s", transition, next_page_data['scene'], next_page_data['page'])
-                # Use the updated page data for rendering so background changes immediately
-                page_data = next_page_data
-            except Exception as e:
-                logger.error("TRANSITION ERROR: %s", e)
-
-        # Validate mood against page constraints
-        allowed_moods = page_data.get('allowed_moods', page_data.get('allowed_images'))
-        validated_mood = renderer.validate_mood(mood_name, allowed_moods)
-
-        if validated_mood != mood_name:
-            logger.debug("MOOD VALIDATION: %s -> %s", mood_name, validated_mood)
-
-        # Render HTML display with background
-        # Resolve background image path (images/ -> prompts/images/)
-        background_path = resolve_image_path(page_data.get('background_image'))
-        logger.debug("RENDER: %s/%s - mood=%s", page_data['scene'], page_data['page'], validated_mood)
-        logger.debug("  Background (YAML): %s", page_data.get('background_image'))
-        logger.debug("  Background (resolved): %s", background_path)
-        html_output = renderer.render(
-            validated_mood,
-            background_path=background_path
-        )
-
-        return text_response, html_output
-
-    except Exception as e:
-        error_message = f"エラーが発生しました: {str(e)}"
-        background_path = resolve_image_path(page_data.get('background_image'))
-        return error_message, renderer.render("困る", background_path=background_path)
+def voice_chat(audio: tuple):
+    """
+    Voice chat handler for Gradio Stream.
+    Yields audio chunks for streaming output.
+    """
+    return conversation_manager.process_voice_audio(audio)
 
 
 def reset_conversation():
     """Reset conversation history and scenario state."""
-    global conversation_history, scenario_started, page_just_changed, previous_page_location
-    conversation_history = []
+    global scenario_started
+    conversation_manager.reset_conversation()
     scenario_started = False
-    page_just_changed = False
-    previous_page_location = None
     return None, renderer.get_default_display(), "Scene: - | Page: - | Mood: -"
 
 
@@ -361,32 +170,24 @@ def undo_last_page(history: list, current_display: str):
         history: Current chat history (unchanged)
         current_display: Current HTML (unused, kept for signature compatibility)
     """
-    global previous_page_location, page_just_changed
+    success = conversation_manager.undo_last_page()
 
-    if not previous_page_location:
+    if success:
+        page_data = scenario_manager.get_current_page_data()
+        background_path = resolve_image_path(page_data.get('background_image'))
+        html_output = renderer.render(
+            page_data.get('mood', '基本スタイル'),
+            background_path=background_path
+        )
         status = get_status_text()
-        return history, current_display, status
+        return history, html_output, status
 
-    # Restore previous scene/page
-    scene_id, page_id = previous_page_location
-    scenario_manager.current_scene = scene_id
-    scenario_manager.current_page = page_id
-
-    page_data = scenario_manager.get_current_page_data()
-    page_just_changed = True  # ensure next chat treats it as fresh page
-
-    background_path = resolve_image_path(page_data.get('background_image'))
-    html_output = renderer.render(page_data.get('mood', '基本スタイル'), background_path=background_path)
+    # No undo available
     status = get_status_text()
-
-    # Clear previous location after use to prevent repeated toggling
-    previous_page_location = None
-
-    return history, html_output, status
+    return history, current_display, status
 
 
 # === Gradio UI ===
-# Custom CSS to prevent HTML component from graying out during processing
 custom_css = """
 /* Prevent HTML avatar display from graying out during LLM processing */
 .gradio-html {
@@ -399,7 +200,6 @@ custom_css = """
     pointer-events: auto !important;
 }
 
-/* Alternative: Target by data attribute if above doesn't work */
 [data-testid="html"] {
     opacity: 1 !important;
 }
@@ -409,30 +209,86 @@ custom_css = """
     filter: none !important;
 }
 
-/* Stronger override: never dim elements marked with .no-dim */
 .no-dim, .no-dim * {
     opacity: 1 !important;
     filter: none !important;
     pointer-events: auto !important;
 }
 
-/* Cover Gradio queue states */
 .no-dim.pending, .no-dim.generating, .no-dim.loading {
     opacity: 1 !important;
     filter: none !important;
 }
 
-/* Parent containers that get disabled */
 fieldset:has(.no-dim) {
     opacity: 1 !important;
     filter: none !important;
     pointer-events: auto !important;
 }
+
+/* Fix FastRTC Stream component to stay within right column */
+.fastrtc-container {
+    position: relative !important;
+    width: 100% !important;
+    height: auto !important;
+    max-width: 100% !important;
+}
+
+/* Prevent Stream from creating fullscreen overlay */
+.fastrtc-container canvas,
+.fastrtc-container video {
+    position: relative !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+}
+
+/* Keep mode toggle and controls accessible during voice mode */
+.radio-group {
+    position: relative !important;
+    z-index: 1000 !important;
+}
+
+/* Voice stream container - constrain within right column */
+.voice-stream-container {
+    position: relative !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 300px !important;
+    max-height: 300px !important;
+    overflow: hidden !important;
+    contain: layout size style !important;
+}
+
+/* Prevent any fullscreen overlays from Stream component */
+.voice-stream-container * {
+    position: relative !important;
+    max-width: 100% !important;
+}
+
+/* Override any absolute/fixed positioning in Stream */
+.voice-stream-container [style*="position: absolute"],
+.voice-stream-container [style*="position: fixed"] {
+    position: relative !important;
+}
+
+/* Chat column should contain its children */
+.chat-column {
+    position: relative !important;
+    overflow: visible !important;
+    contain: layout !important;
+}
+
+/* Ensure left column (display area) is not affected */
+.chat-column ~ * {
+    position: relative !important;
+    z-index: 1 !important;
+}
 """
 
 with gr.Blocks(title="Conversational Drive Navigator", css=custom_css) as demo:
     gr.Markdown("# 🚗 Conversational Drive Navigator")
-    gr.Markdown("Navigate a drive from the city to the seaside with 4 friends! Guides gas, cafe, and souvenir spots.")
+    gr.Markdown("Navigate a drive from the city to the seaside with 4 friends! Text & Voice modes supported.")
 
     with gr.Row():
         # Left: Display area (HTML/CSS rendered output) - 2/3 width
@@ -454,17 +310,38 @@ with gr.Blocks(title="Conversational Drive Navigator", css=custom_css) as demo:
             )
 
         # Right: Chat interface - 1/3 width
-        with gr.Column(scale=1):
-            chatbot = gr.Chatbot(label="Conversation", height=500)
+        with gr.Column(scale=1, elem_classes=["chat-column"]):
+            # Mode toggle
+            mode_toggle = gr.Radio(
+                choices=["Text", "Voice"],
+                value="Text",
+                label="Chat Mode",
+                interactive=True,
+                elem_classes=["radio-group"]
+            )
 
-            with gr.Row():
+            chatbot = gr.Chatbot(label="Conversation", height=500, type="messages", allow_tags=False)
+
+            # Text mode components
+            with gr.Group() as text_group:
                 msg = gr.Textbox(
                     label="Enter message",
                     placeholder="Example: Tell me the route to the beach!",
                     scale=4
                 )
-                send_btn = gr.Button("Send", scale=1, variant="primary")
+                send_btn = gr.Button("Send", variant="primary")
 
+            # Voice mode components
+            with gr.Group(visible=False, elem_classes=["voice-stream-container"]) as voice_group:
+                gr.Markdown("🎤 **Voice Mode**")
+                gr.Markdown("Speak into your microphone. AI will respond with voice.")
+                voice_stream = Stream(
+                    handler=ReplyOnPause(voice_chat),
+                    modality="audio",
+                    mode="send-receive"
+                )
+
+            # Control buttons
             with gr.Row():
                 undo_btn = gr.Button("Undo Last Page", variant="secondary")
                 clear_btn = gr.Button("Reset Conversation", variant="secondary")
@@ -486,11 +363,9 @@ with gr.Blocks(title="Conversational Drive Navigator", css=custom_css) as demo:
         page = page_data.get('page', '-')
         mood = page_data.get('mood', page_data.get('image', '-'))
 
-        # Get image paths
         background_yaml = page_data.get('background_image', 'none')
         background_resolved = resolve_image_path(background_yaml) if background_yaml and background_yaml != 'none' else 'none'
 
-        # Get mood image path from renderer
         mood_image = renderer.mood_config.get(mood, renderer.mood_config.get(renderer.default_mood, '-'))
 
         return f"""Scene: {scene} | Page: {page} | Mood: {mood}
@@ -500,28 +375,37 @@ Mood Image: {mood_image}"""
     # Initial load handler
     def load_initial_message():
         """Display greeting from LLM on initial load."""
-        global scenario_started, scenario_manager, page_just_changed, conversation_history
+        global scenario_started
 
         if not scenario_started:
             page_data = scenario_manager.start_scenario()
             scenario_started = True
 
-            opening = get_opening_message(page_data)
-            conversation_history.append({"role": "assistant", "content": opening['text']})
+            opening_text = page_data.get('opening_message', page_data.get('opening_speech', ''))
+            opening_mood = page_data.get('mood', page_data.get('image', '基本スタイル'))
 
-            # Render HTML with background
-            # Resolve background image path (images/ -> prompts/images/)
+            conversation_manager.history.append({"role": "assistant", "content": opening_text})
+
             background_path = resolve_image_path(page_data.get('background_image'))
-            html_output = renderer.render(
-                opening['mood'],
-                background_path=background_path
-            )
-            history = [{"role": "assistant", "content": opening['text']}]
+            html_output = renderer.render(opening_mood, background_path=background_path)
+
+            history = [{"role": "assistant", "content": opening_text}]
             status = get_status_text()
 
             return history, html_output, status
 
         return [], renderer.get_default_display(), "Scene: - | Page: - | Mood: -"
+
+    # Mode toggle handler
+    def toggle_mode(mode):
+        """Show/hide components based on mode."""
+        is_text = (mode == "Text")
+        conversation_manager.current_mode = "text" if is_text else "voice"
+
+        return (
+            gr.update(visible=is_text),   # text_group
+            gr.update(visible=not is_text) # voice_group
+        )
 
     # Event handlers
     def process_user_message(user_msg: str, history: list, current_display):
@@ -556,21 +440,23 @@ Mood Image: {mood_image}"""
                     return history, "", current_display, status
 
                 # Remember current location for undo
-                global previous_page_location, page_just_changed
                 if scenario_manager.current_scene and scenario_manager.current_page:
-                    previous_page_location = (scenario_manager.current_scene, scenario_manager.current_page)
+                    conversation_manager.previous_page_location = (
+                        scenario_manager.current_scene,
+                        scenario_manager.current_page
+                    )
 
                 next_page_data = scenario_manager._transition_to(transition)
-                page_just_changed = True
+                conversation_manager.page_just_changed = True
 
-                opening = get_opening_message(next_page_data)
+                opening_text = next_page_data.get('opening_message', next_page_data.get('opening_speech', ''))
+                opening_mood = next_page_data.get('mood', next_page_data.get('image', '基本スタイル'))
                 background_path = resolve_image_path(next_page_data.get('background_image'))
-                html_output = renderer.render(opening['mood'], background_path=background_path)
+                html_output = renderer.render(opening_mood, background_path=background_path)
 
-                # Record assistant opening in conversation history (skip slash command)
-                conversation_history.append({"role": "assistant", "content": opening['text']})
+                conversation_manager.history.append({"role": "assistant", "content": opening_text})
 
-                response_text = opening['text'] or f"移動しました: {next_page_data['scene']}/{next_page_data['page']}"
+                response_text = opening_text or f"移動しました: {next_page_data['scene']}/{next_page_data['page']}"
                 history.append({"role": "user", "content": user_msg})
                 history.append({"role": "assistant", "content": response_text})
 
@@ -584,17 +470,27 @@ Mood Image: {mood_image}"""
             status = get_status_text()
             return history, "", current_display, status
 
-        # Get response from chat function (returns text_response, html_output)
+        # Get response from chat function
         response_text, html_output = chat(user_msg, history)
 
-        # Add to history (Gradio 6.0 format)
+        # Add to history
         history.append({"role": "user", "content": user_msg})
         history.append({"role": "assistant", "content": response_text})
 
-        # Update HTML display - always use html_output
         status = get_status_text()
-
         return history, "", html_output, status
+
+    # Refresh history for voice mode updates
+    def get_conversation_history():
+        """Get current conversation history for chatbot display."""
+        return conversation_manager.history.copy()
+
+    # Mode toggle event
+    mode_toggle.change(
+        fn=toggle_mode,
+        inputs=[mode_toggle],
+        outputs=[text_group, voice_group]
+    )
 
     # Button click handlers
     send_btn.click(
@@ -625,6 +521,13 @@ Mood Image: {mood_image}"""
         outputs=[chatbot, display_component, status_line]
     )
 
+    # Timer for history refresh (updates chatbot with voice transcripts)
+    refresh_timer = gr.Timer(value=1)  # 1 second interval
+    refresh_timer.tick(
+        fn=get_conversation_history,
+        outputs=[chatbot]
+    )
+
 
 # Application startup
 if __name__ == "__main__":
@@ -634,6 +537,5 @@ if __name__ == "__main__":
         share=False,
         server_name="127.0.0.1",
         server_port=port,
-        theme=gr.themes.Soft(),
         allowed_paths=["images", "prompts/images", "prompts/data"]
     )

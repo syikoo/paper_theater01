@@ -6,43 +6,58 @@
 
 ### バージョン情報
 
-- **現在のバージョン**: 2.0.0
-- **Python**: 3.12+
-- **UIフレームワーク**: Gradio 6.0+
-- **LLM**: OpenAI GPT-4o-mini
+- **現在のバージョン**: 2.1.0 (Dual-Mode: Text + Voice)
+- **Python**: 3.10+
+- **UIフレームワーク**: Gradio 5.0+
+- **LLM**: OpenAI GPT-4o-mini (Text), OpenAI Realtime API (Voice)
 - **設定形式**: YAML (prompts/scenario.yaml)
+- **音声機能**: FastRTC + Server-side VAD + Whisper
 
 ---
 
 ## アーキテクチャ概要
 
-### システム構成図
+### システム構成図（Dual-Mode: Text + Voice）
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    conversation_app.py                      │
 │                    (メインアプリケーション)                    │
+│          [Text Mode] ←→ Mode Toggle ←→ [Voice Mode]        │
 └─────────────────────────────────────────────────────────────┘
                               │
         ┌─────────────────────┼─────────────────────┐
         │                     │                     │
         ▼                     ▼                     ▼
 ┌──────────────────┐  ┌────────────────────┐  ┌──────────────┐
-│   renderers/     │  │ scenario_manager   │  │   prompts/   │
+│   core/          │  │ scenario_manager   │  │   prompts/   │
 │                  │  │                    │  │              │
-│ ・base           │  │ ・YAMLサポート     │  │ ・system.txt │
-│ ・paper_theater  │  │ ・シーン/ページ管理 │  │ ・scenario   │
-│                  │  │ ・遷移ロジック      │  │  .yaml       │
-│                  │  │                    │  │              │
+│ ・conversation_  │  │ ・YAMLサポート     │  │ ・system.txt │
+│   manager        │  │ ・シーン/ページ管理 │  │ ・scenario   │
+│ ・text_handler   │  │ ・遷移ロジック      │  │  .yaml       │
+│ ・voice_handler  │  │                    │  │              │
+│ ・transcript_    │  │                    │  │              │
+│   analyzer       │  │                    │  │              │
 └──────────────────┘  └────────────────────┘  └──────────────┘
         │                     │                     │
-        └─────────────────────┼─────────────────────┘
-                              ▼
-                  ┌───────────────────────┐
-                  │   prompts/data/       │
-                  │ ・mood_*.png (20枚)   │
-                  │ ・bg_*.jpg (背景画像) │
-                  └───────────────────────┘
+        │                     │                     │
+        ▼                     ▼                     ▼
+┌──────────────────┐  ┌────────────────────┐  ┌──────────────┐
+│   renderers/     │  │ OpenAI APIs        │  │ prompts/data/│
+│                  │  │                    │  │              │
+│ ・base           │  │ ・GPT-4o-mini      │  │ ・mood_*.png │
+│ ・paper_theater  │  │   (Text + Analysis)│  │   (20枚)     │
+│                  │  │ ・Realtime API     │  │ ・bg_*.jpg   │
+│                  │  │   (Voice)          │  │   (背景画像) │
+└──────────────────┘  └────────────────────┘  └──────────────┘
+```
+
+### デュアルモード処理フロー
+
+```
+Text Mode:  ユーザー入力 → gpt-4o-mini → JSON → 表示更新
+Voice Mode: 音声入力 → Realtime API → トランスクリプト →
+            gpt-4o-mini分析 → JSON → 表示更新
 ```
 
 ---
@@ -50,11 +65,18 @@
 ## ディレクトリ構造
 
 ```
-claude-test02/
-├── conversation_app.py          # メインエントリーポイント
+paper_theater01/
+├── conversation_app.py          # メインエントリーポイント（デュアルモード対応）
 ├── scenario_manager.py          # シーン/ページ状態管理（YAMLのみ）
 ├── yaml_scenario_loader.py      # YAMLパーサー
 ├── migration_tool.py            # テキスト→YAML変換ツール（旧版用）
+│
+├── core/                        # 会話処理コアモジュール（NEW in v2.1.0）
+│   ├── __init__.py
+│   ├── conversation_manager.py  # 統一状態管理（テキスト/音声）
+│   ├── text_handler.py          # テキストチャット処理
+│   ├── voice_handler.py         # Realtime API音声処理
+│   └── transcript_analyzer.py   # トランスクリプト→JSON変換
 │
 ├── renderers/                   # ディスプレイ抽象化層
 │   ├── __init__.py
@@ -70,23 +92,24 @@ claude-test02/
 │       ├── ...
 │       └── bg_*.jpg             # 背景画像（オプション）
 │
-├── images/                      # 旧画像ディレクトリ（削除予定）
-│
 ├── .vscode/                     # VSCode設定
 │   └── launch.json              # デバッグ設定
 │
 ├── README.md                    # ユーザー向けドキュメント
-├── CLAUDE.md                    # 開発者向けガイド
+├── CLAUDE.md                    # 開発者向けガイド（AGENTS.md参照）
+├── AGENTS.md                    # Claude Code向けガイド
 ├── CHANGELOG.md                 # 変更履歴
 ├── LLM_SCRIPT.md                # LLMプロンプト詳細
 ├── PROJECT_OVERVIEW.md          # 本ドキュメント
+├── VOICE_MODE_README.md         # 音声モード詳細ドキュメント
 │
 ├── pyproject.toml               # uv依存関係定義
-├── requirements.txt             # pip依存関係
 ├── uv.lock                      # ロックファイル
 │
 ├── run.sh / run.bat             # 起動スクリプト
-└── test_scenario.py             # テストスクリプト
+├── test_scenario.py             # シナリオテスト
+├── test_basic_functionality.py  # 基本機能テスト
+└── test_json_display.py         # JSON分離テスト
 ```
 
 ---
@@ -95,20 +118,21 @@ claude-test02/
 
 ### 1. conversation_app.py（メインアプリケーション）
 
-**役割**: アプリケーション全体のオーケストレーション
+**役割**: アプリケーション全体のオーケストレーション（デュアルモード対応）
 
 **主要機能**:
-- Gradio UIの構築（チャット、画像表示、ステータス）
-- LLM（OpenAI GPT-4o-mini）との通信
+- Gradio UIの構築（チャット、画像表示、モード切替）
+- ConversationManagerを介したテキスト/音声処理の統合
 - レンダラーとシナリオマネージャーの統合
-- イベントハンドリング（メッセージ送信、リセット）
+- イベントハンドリング（テキスト送信、音声入出力、リセット）
+- FastRTC Streamコンポーネントによる音声ストリーミング
 
 **重要な関数**:
 ```python
-def chat(message, history)               # LLM会話処理
-def process_user_message(...)            # ユーザー入力処理
-def build_system_prompt(page_data, ...)  # プロンプト構築
-def parse_llm_response(response_text)    # LLM応答パース
+def chat(message, history)               # テキストモード会話処理
+def voice_chat(audio)                    # 音声モード会話処理
+def toggle_mode(mode)                    # テキスト/音声モード切替
+def get_conversation_history()           # 会話履歴取得（表示用）
 ```
 
 **プログラム的なレンダラー選択**（Line ~25）:
@@ -121,6 +145,71 @@ renderer = PaperTheaterRenderer(DEFAULT_PAPER_THEATER_MOODS)
 
 # 将来: 3Dアバター
 # renderer = Avatar3DRenderer(config)
+```
+
+---
+
+### 1.5. core/（会話処理コアモジュール）**NEW in v2.1.0**
+
+#### conversation_manager.py（統一状態管理）
+
+**役割**: テキスト/音声モードの統一状態管理とオーケストレーション
+
+**主要機能**:
+- デュアル履歴管理（表示用とLLMコンテキスト用を分離）
+- テキストハンドラーと音声ハンドラーの調整
+- ページ遷移処理の共通化
+- ムード検証と表示レンダリング
+
+**重要なデータ構造**:
+```python
+self.history       # 表示履歴（テキストのみ、チャットUI用）
+self.llm_history   # LLM履歴（JSONを含む、コンテキスト用）
+```
+
+#### text_handler.py（テキストチャット処理）
+
+**役割**: テキストモードのLLM通信とJSON応答パース
+
+**主要機能**:
+- gpt-4o-miniへのAPI呼び出し
+- システムプロンプト構築（シーン/ページプロンプト含む）
+- JSON応答パース（text, mood, transition抽出）
+- 遷移条件のフォーマット
+
+**戻り値**:
+```python
+(text_response, mood_name, transition, assistant_message)
+```
+
+#### voice_handler.py（Realtime API音声処理）
+
+**役割**: OpenAI Realtime APIを使った音声入出力
+
+**主要機能**:
+- 音声データの前処理（2D→1D、float32→int16、48kHz→24kHz）
+- Realtime APIセッション管理
+- Server-side VADによる発話検出
+- 音声チャンクのストリーミング出力
+- トランスクリプトキャプチャ（Whisper）
+
+**音声フォーマット**:
+- サンプルレート: 24kHz
+- フォーマット: PCM16
+- チャンクサイズ: 480サンプル（20ms）
+
+#### transcript_analyzer.py（トランスクリプト分析）
+
+**役割**: 音声トランスクリプトからムード/遷移を抽出
+
+**主要機能**:
+- gpt-4o-miniによる事後分析
+- ユーザー発話とアシスタント応答の解析
+- テキストモードと同じJSON形式を生成
+
+**処理フロー**:
+```
+音声トランスクリプト → 分析プロンプト → gpt-4o-mini → JSON
 ```
 
 ---
@@ -347,14 +436,14 @@ configuration:
 8. 初回メッセージ表示（start_scene から開始）
 ```
 
-### 2. ユーザーメッセージ処理
+### 2. テキストモードメッセージ処理
 
 ```
-1. ユーザーがメッセージ入力
+1. ユーザーがテキスト入力
    ↓
-2. process_user_message() 呼び出し
+2. chat() 呼び出し → ConversationManager.process_text_message()
    ↓
-3. chat() 関数でLLM呼び出し
+3. TextHandler.process_message()
    │
    ├─ 現在ページデータ取得（ScenarioManager）
    ├─ システムプロンプト構築
@@ -362,28 +451,74 @@ configuration:
    │  ├─ ページプロンプト追加
    │  ├─ ムード制約情報
    │  └─ 遷移条件フォーマット（自然言語）
-   ├─ OpenAI API 呼び出し
+   ├─ OpenAI API 呼び出し（gpt-4o-mini）
    ├─ JSON応答パース（text, mood, transition）
    │
    ↓
-4. ページ遷移判定
+4. 両方の履歴に追加
+   ├─ llm_history に追加（JSON含むassistant_message）
+   └─ history に追加（テキストのみtext_response）
+   ↓
+5. ページ遷移判定
    │
    └─ 遷移あり → ScenarioManager._transition_to()
    └─ 遷移なし → 現在ページ継続
    ↓
-5. ムード検証（Renderer.validate_mood）
+6. ムード検証（Renderer.validate_mood）
    ↓
-6. HTML/CSS合成レンダリング
+7. HTML/CSS合成レンダリング
    │
    ├─ 背景画像パス取得（page_data）
    ├─ ムード画像パス取得（mood_config）
    └─ HTMLマークアップ生成
    ↓
-7. Gradio UIへ返却
-   ├─ チャット履歴更新
+8. Gradio UIへ返却
+   ├─ チャット履歴更新（historyから）
    └─ gr.HTML 更新（チラつき防止）
+```
+
+### 2.5. 音声モードメッセージ処理**NEW in v2.1.0**
+
+```
+1. ユーザーが音声入力（マイク）
    ↓
-8. 画面更新（チャット + HTML表示）
+2. Stream component → voice_chat() → ConversationManager.process_voice_audio()
+   ↓
+3. VoiceHandler.process_audio()
+   │
+   ├─ 音声前処理（2D→1D、float32→int16、48kHz→24kHz）
+   ├─ Realtime API接続
+   ├─ システム指示送信（現在ページのプロンプト）
+   ├─ Server-side VADで発話検出
+   ├─ 音声応答ストリーミング（ユーザーに即座に返却）
+   └─ トランスクリプトキャプチャ
+       ├─ user_transcript（Whisper）
+       └─ assistant_transcript（Realtime API）
+   ↓
+4. TranscriptAnalyzer.analyze_transcript()
+   │
+   ├─ 現在ページデータ取得
+   ├─ 分析プロンプト構築
+   │  ├─ トランスクリプト内容
+   │  ├─ 許可されたムードリスト
+   │  └─ 利用可能な遷移リスト
+   ├─ OpenAI API 呼び出し（gpt-4o-mini）
+   └─ JSON応答パース（mood, transition）
+   ↓
+5. 両方の履歴に追加
+   ├─ llm_history に追加（トランスクリプトテキスト）
+   └─ history に追加（トランスクリプトテキスト）
+   ↓
+6. ページ遷移判定
+   ↓
+7. ムード検証
+   ↓
+8. HTML/CSS合成レンダリング
+   ↓
+9. UIは自動更新
+   ├─ 音声応答（既にストリーミング済み）
+   ├─ チャット履歴（Timerで1秒ごと更新）
+   └─ gr.HTML 更新（ムード/背景変更）
 ```
 
 ### 3. ページ遷移時
@@ -468,14 +603,21 @@ renderer = PaperTheaterRenderer(DEFAULT_PAPER_THEATER_MOODS)
 ## 技術スタック
 
 ### フロントエンド
-- **Gradio 6.0+**: Webインターフェース構築
+- **Gradio 5.0+**: Webインターフェース構築
   - ChatBot コンポーネント（会話履歴）
   - HTML コンポーネント（HTML/CSS画像合成表示）
-  - Textbox コンポーネント（入力/ステータス）
+  - Textbox コンポーネント（テキスト入力）
+  - Stream コンポーネント（音声入出力・FastRTC）
+  - Radio コンポーネント（モード切替）
 
 ### バックエンド
-- **Python 3.12+**: メイン言語
-- **OpenAI API**: LLM（GPT-4o-mini）
+- **Python 3.10+**: メイン言語（FastRTC要件）
+- **OpenAI API**:
+  - GPT-4o-mini（テキストチャット + トランスクリプト分析）
+  - Realtime API（音声入出力）
+- **FastRTC 0.0.30+**: 音声ストリーミング（VAD付き）
+- **scipy**: 音声リサンプリング
+- **numpy**: 音声データ処理
 - **PyYAML**: YAML設定パース
 - **python-dotenv**: 環境変数管理
 
@@ -705,24 +847,34 @@ uv run python test_scenario.py
 
 ## 今後の開発方向
 
-### 短期（Version 2.1）
-- [ ] 背景画像の追加と設定
-- [ ] YAML設定の洗練化
+### Version 2.1（✅ 完了）
+- [✅] デュアルモード対応（テキスト + 音声）
+- [✅] OpenAI Realtime API統合
+- [✅] FastRTCによる音声ストリーミング
+- [✅] トランスクリプト分析によるムード/遷移検出
+- [✅] デュアル履歴パターン（表示用/LLMコンテキスト用）
+- [✅] モジュール化（core/ディレクトリ）
+
+### 短期（Version 2.2）
 - [ ] より多くのシナリオ追加
-- [ ] エラーハンドリング強化
+- [ ] 音声モードのエラーハンドリング強化
+- [ ] 音声品質設定（サンプルレート調整）
+- [ ] 音声コマンドショートカット（例: "カフェに移動"）
 - [ ] テストカバレッジ向上
 
 ### 中期（Version 3.0）
 - [ ] 3Dアバターレンダラー実装
-- [ ] マルチモーダル対応（音声入力/TTS）
+- [ ] 割り込み/一時停止機能（音声モード）
 - [ ] セッション永続化
 - [ ] 動的背景切り替えアニメーション
+- [ ] 多言語サポート
 
 ### 長期（Version 4.0）
 - [ ] マルチユーザー対応
 - [ ] カスタムLLM統合（ローカルモデル）
 - [ ] プラグインシステム
 - [ ] YAML設定のGUIエディタ
+- [ ] ボイスクローニング対応
 
 ---
 
@@ -763,6 +915,18 @@ uv run python test_scenario.py
 - 背景画像サポート追加
 - シーン/ページレベルプロンプト追加
 - 自然言語遷移条件追加
+
+**Version 2.1 の主要変更点**:
+- デュアルモード対応（テキスト + 音声）
+- OpenAI Realtime API統合
+- FastRTC音声ストリーミング
+- Server-side VAD（Voice Activity Detection）
+- Whisperによる自動文字起こし
+- トランスクリプト分析（ムード/遷移抽出）
+- core/モジュール化（会話処理の分離）
+- デュアル履歴パターン（表示/LLMコンテキスト分離）
+- Gradio 5.x互換性（FastRTC要件）
+- Python 3.10+要件（FastRTC要件）
 
 **次のステップ**:
 1. [README.md](README.md) でユーザーガイドを確認
