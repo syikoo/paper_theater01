@@ -1,0 +1,204 @@
+# デモシナリオの設定ファイル YAML形式
+# (YAML形式は、字下げインデントの空白文字数を厳密にみるので注意してください)
+
+# すべて共通するプロンプト
+base:
+  description: スマートナビのAIのプロンプトです
+  base_prompt: ''
+  start_scene: town_start
+
+# 各シーンの記述: ドライブ前、ガソリンスタンド、目的中編
+#       デモの中に複数のシーンがあります。一つのシーンの中に複数のpageが存在します
+#       ページの間は、transisionにある条件の時に遷移します。(page_idで指定)
+#       ムードは、アバターなどの画像変更用です。
+scenes:
+
+# 出発前のシーン
+- scene_id: town_start    
+
+  description: ドライブ開始シーン
+  scene_prompt: ''
+  start_page: greeting
+  opening_message: ''
+  background_image: images/page_departure.jpg
+  allowed_moods: null
+
+  pages:
+
+  - page_id: greeting
+    description: 出発前の準備確認
+    page_prompt: |
+      - 出発前の準備をサポートしてください
+      - 燃料チェック、ルート確認を促してください
+      - ユーザーが準備完了を示したら、運転開始を促してください
+      - 明るく親しみやすい雰囲気で会話してください
+    opening_message: こんにちは！今日は海までドライブですね。準備はいいですか？
+    default_mood: 基本スタイル
+    background_image: images/page_departure.jpg
+    allowed_moods: null
+    transitions:
+      driving:driving: ユーザーが準備完了を示したとき
+
+# ドライブ中のシーン
+- scene_id: driving    
+
+  description: ドライブ中のシーン
+  scene_prompt: ''
+  start_page: driving
+  opening_message: ''
+  background_image: images/page_driving.jpg
+  allowed_moods: [運転, 話す, 笑う, 指差し, 基本スタイル]
+
+  pages:
+  - page_id: driving
+    description: 運転中のサポート
+    page_prompt: |
+      - 運転中のサポートをしてください
+      - 安全運転のアドバイスを適宜入れてください
+      - 給油、カフェ、お土産などユーザーの希望に応じて提案してください
+      - 景色の良い場所についても触れてください
+      - 楽しくリラックスした雰囲気で会話してください
+    opening_message: それでは出発しましょう！国道に入りました。快適なドライブですね。
+    default_mood: 運転
+    background_image: images/page_driving.jpg
+    allowed_moods: [運転, 話す, 笑う, 指差し, 基本スタイル]
+    transitions:
+      arrival: 目的地に到着したとき
+      gas_station:refueling: 給油を希望したとき
+      cafe: 休憩/カフェを希望したとき
+      shopping: 買い物を希望したとき
+      scenery: 景色を見たいとき
+      charging: 充電を希望したとき
+
+  - page_id: cafe
+    description: カフェで休憩
+    page_prompt: |
+      - カフェでの休憩をサポートしてください
+      - メニューの提案（コーヒー、ケーキ、軽食など）をしてください
+      - リラックスした雰囲気を演出してください
+      - 景色や雰囲気について話してください
+      - ゆったりとした会話を楽しんでください
+    opening_message: ここは素敵なカフェです。海が見えるテラス席もありますよ。何か注文しますか？
+    default_mood: カフェ
+    background_image: images/page_cafe.jpg
+    allowed_moods: [カフェ, 笑う, 話す, 基本スタイル]
+    transitions:
+      driving: 出発を希望したとき
+
+  - page_id: shopping
+    description: お土産屋さんで買い物
+    page_prompt: |
+      - お土産選びをサポートしてください
+      - おすすめの特産品や海産物を紹介してください
+      - 楽しいショッピング体験を提供してください
+      - ワクワクする雰囲気で会話してください
+    opening_message: 地元で有名なお土産屋さんに到着しました！海産物や特産品がたくさんありますよ。
+    default_mood: 買い物
+    background_image: images/page_suvenior.jpg
+    allowed_moods: [買い物, 笑う, 話す, 指差し, 基本スタイル]
+    transitions:
+      driving: 出発を希望したとき
+
+  - page_id: scenery
+    description: 絶景ポイントで写真撮影
+    page_prompt: |
+      - 景色の美しさを表現してください
+      - 写真撮影を提案してください
+      - この場所の特徴や魅力を説明してください
+      - 感動を共有する雰囲気で会話してください
+    opening_message: わぁ、絶景ポイントに到着しました！海が一望できますね。写真撮りましょうか？
+    default_mood: 景色
+    background_image: null
+    allowed_moods: [景色, 笑う, 話す, 基本スタイル]
+    transitions:
+      arrival: 到着したとき
+      driving: 出発を希望したとき
+
+  - page_id: charging
+    description: EV充電中の待ち時間
+    page_prompt: |
+      - 充電をサポートしてください
+      - 充電時間の目安を伝えてください
+      - 待ち時間の過ごし方を提案してください
+      - 安心感のある雰囲気で会話してください
+    opening_message: EV充電スポットに到着しました。充電中はカフェで休憩できますよ。
+    default_mood: 充電
+    background_image: images/page_charging.jpg
+    allowed_moods: [充電, 話す, 基本スタイル]
+    transitions:
+      driving: 充電完了後、出発を希望したとき
+
+
+- scene_id: gas_station
+
+  description: ガソリンスタンドでの給油
+  scene_prompt: ''
+  start_page: refueling
+  opening_message: ''
+  background_image: null
+  allowed_moods: null
+
+  pages:
+
+  - page_id: refueling
+    description: ガソリンスタンドで給油
+    page_prompt: |
+      - 給油をサポートしてください
+      - 給油量や支払い方法について確認してください
+      - 給油完了後、次の行動を促してください
+      - テキパキとした対応で会話してください
+    opening_message: ガソリンスタンドに到着しました。給油しますね。レギュラーでいいですか？
+    default_mood: 給油
+    background_image: images/page_charging.jpg
+    allowed_moods: [給油, 話す, 基本スタイル]
+    transitions:
+      town_start:driving: 給油完了後、運転に戻るとき
+
+# 目的地周辺のシーン
+- scene_id: beach_arrival
+
+  description: 目的地の海辺に到着
+  scene_prompt: ''
+  start_page: arrival
+  opening_message: ''
+  background_image: null
+  allowed_moods: null
+  pages:
+  - page_id: arrival
+    description: 目的地の海辺に到着
+    page_prompt: |
+      - 到着の喜びを表現してください
+      - 海辺での過ごし方を提案してください
+      - ドライブの思い出を振り返ってください
+      - 達成感と喜びの雰囲気で会話してください
+      - ここは最終地点なので、遷移は発生しません
+    opening_message: 海辺に到着しました！お疲れ様でした。素敵な景色ですね！
+    default_mood: 到着
+    background_image: images/page_beach.jpg
+    allowed_moods: [到着, 笑う, 喜ぶ, 基本スタイル]
+    transitions: {}
+
+# その他の設定
+configuration:
+  mood_images:
+    基本スタイル: images/basic.png
+    話す: images/talking.png
+    笑う: images/laughing.png
+    驚く: images/surprised.png
+    困る: images/troubled.png
+    泣く: images/crying.png
+    走る: images/running.png
+    寝る: images/sleeping.png
+    考える: images/thinking.png
+    指差し: images/pointing.png
+    喜ぶ: images/happy.png
+    運転: images/driving.png
+    給油: images/refueling.png
+    カフェ: images/cafe.png
+    買い物: images/shopping.png
+    景色: images/scenery.png
+    充電: images/charging.png
+    地図: images/map.png
+    到着: images/arrival.png
+    出発: images/departure.png
+  background_images: {}

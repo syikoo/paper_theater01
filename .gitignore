@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# uv
+.uv/
+uv.lock
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+# .vscode/ は共有設定として含めるためコメントアウト
+# プロジェクト固有の設定は含め、個人設定は除外したい場合は .vscode/*.code-workspace を追加
+.idea/
+*.swp
+*.swo
+*~
+
+# Gradio
+gradio_cached_examples/
+flagged/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Images (optional - コメントアウトすると画像もGit管理対象になります)
+# images/
+
+# Old/archived files
+*.old
+scenarios.yaml
+
+nul
+NUL
+

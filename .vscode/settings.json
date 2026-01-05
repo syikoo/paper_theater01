@@ -1,0 +1,31 @@
+{
+  // uv で管理される仮想環境のPythonを使用
+  // Windowsの場合: .venv/Scripts/python.exe
+  // Linux/macOSの場合: .venv/bin/python
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+
+  // 自動で仮想環境を検出
+  "python.terminal.activateEnvironment": true,
+
+  // Pylance（言語サーバー）の設定
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}"
+  ],
+
+  // フォーマッタとリンターの設定（お好みで）
+  "python.formatting.provider": "none",
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  },
+
+  // テスト設定
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+
+  // 環境変数ファイル
+  "python.envFile": "${workspaceFolder}/.env"
+}
